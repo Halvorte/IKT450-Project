@@ -128,4 +128,4 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-stock_data/
+Project/stock_data/
