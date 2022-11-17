@@ -4,6 +4,7 @@ from IPython.display import display
 import os
 import matplotlib.pyplot as plt
 import time
+import csv
 
 # from pandas.table.plotting import table
 
@@ -51,6 +52,22 @@ def createDataframes(files):
     return dfs
 
 
+def addCompundScores(df):
+    cs_df = pd.read_csv('compound_scores.csv')
+    x = {k: v for k, v in cs_df.groupby("stock")}
+    y = {}
+
+    for item, value in df.items():
+        stock_name = item.split('.')
+        stock_name = stock_name[0]
+        for item2, value2 in x.items():
+            if item2 == stock_name:
+                merged_df = value.merge(value2[['Date', 'compound score']], how='inner', on='Date')
+                y[stock_name] = merged_df
+
+    return y
+
+
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     print('Fetching dataset')
@@ -59,6 +76,10 @@ if __name__ == '__main__':
     files = [os.path.join(path, i) for i in os.listdir(path) if os.path.isfile(os.path.join(path, i))]
     dictOfDfs = createDataframes(files)
     dictOfDfs = calulateOpenClose(dictOfDfs)
+
+    complete_dfs = addCompundScores(dictOfDfs)
+
+
     et = time.time()
     print('Dataset ready in ' + str(et - st) + 's')
 
