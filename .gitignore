@@ -129,3 +129,4 @@ dmypy.json
 .pyre/
 
 Project/stock_data/
+/Project/Complete_df.csv

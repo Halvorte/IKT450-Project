@@ -5,8 +5,8 @@ import os
 import matplotlib.pyplot as plt
 import time
 import csv
-
-# from pandas.table.plotting import table
+import tensorflow as tf
+import torch
 
 
 # Function for sliding a window over dataframe to select window to train model on
@@ -34,10 +34,7 @@ def sliding_window(dataframe, window_size):
 
 
 def f(x, y):
-    if y - x > 0:
-        return 1
-    else:
-        return 0
+    return y - x
 
 
 def calulateOpenClose(df):
@@ -68,7 +65,14 @@ def addCompundScores(df):
     return y
 
 
-# Press the green button in the gutter to run the script.
+def addStockNames(df):
+    for item, value in df.items():
+        item = item.split('.')[0]
+        value["Stock"] = item
+
+    return df
+
+
 if __name__ == '__main__':
     print('Fetching dataset')
     st = time.time()
@@ -76,17 +80,18 @@ if __name__ == '__main__':
     files = [os.path.join(path, i) for i in os.listdir(path) if os.path.isfile(os.path.join(path, i))]
     dictOfDfs = createDataframes(files)
     dictOfDfs = calulateOpenClose(dictOfDfs)
-
     complete_dfs = addCompundScores(dictOfDfs)
-
-
     et = time.time()
     print('Dataset ready in ' + str(et - st) + 's')
 
-    # stock_aapl = pd.read_csv('stock_data/raw/AAPL.csv', usecols=["Date", "Open", "Close"])
-    # stock_amzn = pd.read_csv('stock_data/raw/AMZN.csv')
-    # stock_orcl = pd.read_csv('stock_data/ORCL.csv')
-    # display(stock_aapl)
-    #
-    # stock_aapl["closeMinusOpen"] = calulateOpenClose(stock_aapl)
-    # print(stock_aapl)
+    # Add stock names to dictOfDfs
+    complete_dfs = addStockNames(complete_dfs)
+    print(complete_dfs)
+
+    complete_df = pd.concat(complete_dfs, axis=0).reset_index()
+    print(complete_df)
+
+    complete_df.to_csv('Complete_df.csv', index=False)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(device)
