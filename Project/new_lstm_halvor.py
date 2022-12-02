@@ -1,3 +1,5 @@
+import random
+
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -17,6 +19,22 @@ def data():
     # Remove unnecessary columns
     #df = df.drop(columns=['level_0', 'level_1'])
     df = df.drop(columns=['level_1'])
+
+    # Add a column with 1 and 0 for price increase or decrease
+    close_minus_open = []
+    for j in range(len(df)):
+        if j == 0:
+            if (df.iloc[j]['Close'] - df.iloc[j]['Open']) > 0:
+                close_minus_open.append(1)
+            else:
+                close_minus_open.append(0)
+        else:
+            if (df.iloc[j]['Close'] - df.iloc[j-1]['Close']) > 0:
+                close_minus_open.append(1)
+            else:
+                close_minus_open.append(0)
+
+    df['Cmo'] = close_minus_open
 
     # Split up to the different stocks
     #all_stocks = df['Stock'].unique().tolist()
@@ -45,7 +63,7 @@ class LSTM(nn.Module):
                             num_layers=num_layers, batch_first=True)  # lstm
         self.fc_1 = nn.Linear(hidden_size, 128)  # fully connected 1
         self.fc = nn.Linear(128, num_classes)  # fully connected last layer
-
+        self.sigmoid = nn.Sigmoid()
         self.relu = nn.ReLU()
 
     def forward(self, x):
@@ -58,41 +76,21 @@ class LSTM(nn.Module):
         out = self.fc_1(out)  # first Dense
         out = self.relu(out)  # relu
         out = self.fc(out)  # Final Output
+        out = self.sigmoid(out)
         return out
 
 
-# Training loop function
-def training_loop(n_epochs, lstm, optimizer, loss_fn, x_train, y_train, x_val, y_val):
-    for epoch in range(n_epochs):
-        outputs = lstm.forward(x_train)  # forward pass
-        optimizer.zero_grad()  # caluclate the gradient, manually setting to 0
+# Function to plot loss
+def plot_loss(losses):
+    x = [x for x in range(len(losses))]
+    plt.plot(x, losses, label='losses')
+    plt.title('Losses over epochs')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.show()
 
-        # obtain the loss function
-        loss = loss_fn(outputs, y_train)
-        loss.backward()  # calculates the loss of the loss function
-
-        optimizer.step()  # improve from loss, i.e backprop
-        #if epoch % 1000 == 0:
-        #    print("Epoch: %d, loss: %1.5f" % (epoch, loss.item()))
-
-
-# Function for training the model
-def run_training(nr_epochs, lstm, optimizer, loss_fn, x_train, y_train):
-    for epoch in tqdm(range(nr_epochs)):
-        # Train on all the windows
-        for i in range(len(x_train)):
-
-            outputs = lstm.forward(x_train[i])  # forward pass
-            optimizer.zero_grad()  # caluclate the gradient, manually setting to 0
-
-            # obtain the loss function
-            loss = loss_fn(outputs, y_train[i])
-            loss.backward()  # calculates the loss of the loss function
-
-            optimizer.step()  # improve from loss, i.e backprop
-
-
-    return print('Finished training')
+    return False
 
 
 # Function to plot predicted vs real data for a stock
@@ -131,8 +129,10 @@ def plot_real_pred(dataframe, predicted_vals, window_size, predicted_vals2, true
 # test function for walk forward validation
 def walk_forward(dataframe, window_size, hyperparams):
     # Get data
-    x = dataframe.drop(columns=['Close', 'Date', 'level_0'])
-    y = dataframe[['Close']]
+    #x = dataframe.drop(columns=['Close', 'Date', 'level_0'])
+    x = dataframe.drop(columns=['Date', 'level_0'])
+    #y = dataframe[['Close']]
+    y = dataframe[['Cmo']]
 
     # input size is the number of features. nr of columns in x data
     input_size = len(x.columns)  # Decided by the number of columns in training data
@@ -152,6 +152,8 @@ def walk_forward(dataframe, window_size, hyperparams):
 
 
     # Get windows and store them in a list
+    y_trains = []
+    y_vals = []
     windows_tensor = []
     real_vals_tensor = []
     x_val_tensors = []
@@ -182,62 +184,73 @@ def walk_forward(dataframe, window_size, hyperparams):
         x_val_tensors.append(x_val_tensors_final)
         y_val_tensors.append(y_val_tensor)
         to_predict.append(x_to_pred_tensor_final)
+        y_trains.append(y_train)
+        y_vals.append(y_val)
         # make a price comparison for each window
-        price_comp = y_val.iloc[-1].Close - y_train.iloc[-1].Close
+        price_comp = y_val.iloc[-1].Cmo
         price_comparisons.append(price_comp)
 
-        pred_comp.append(y_train.iloc[-1].Close)
+        pred_comp.append(y_train.iloc[-1].Cmo)
+
+    epoch_losses = []
+    correct_pred = 0
+    wrong_pred = 0
+    TP = 0
+    TN = 0
+    FP = 0
+    FN = 0
 
     # Train on the data epoch amount of times
-    run_training(nr_epochs, lstm=lstm, optimizer=optimizer, loss_fn=loss_fn, x_train=windows_tensor, y_train=real_vals_tensor)
+    for epoch in tqdm(range(nr_epochs)):
+        # Train on all the windows
+        for i in range(len(windows_tensor)):
 
-    # Make predictions on all the windows and calculate accuracy
-    print('Starting accuracy measurements')
-    predicted_vals = []
-    predicted_vals2 = []
-    true2 = []
-    losses = []
-    TP = 0
-    FP = 0
-    attempts = 0
-    for i in range(len(to_predict)):
-        attempts += 1
-        prediction = lstm.forward(to_predict[i])
+            outputs = lstm.forward(windows_tensor[i])  # forward pass
+            optimizer.zero_grad()  # caluclate the gradient, manually setting to 0
 
-        # Loss
-        val_loss = loss_fn(prediction, y_val_tensors[i])
-        losses.append(val_loss.item())
+            # obtain the loss function
+            loss = loss_fn(outputs, real_vals_tensor[i])
+            loss.backward()  # calculates the loss of the loss function
 
-        # Check if the  price increased
+            optimizer.step()  # improve from loss, i.e backprop
+            #if epoch % 1000 == 0:
+            #    print("Epoch: %d, loss: %1.5f" % (epoch, loss.item()))
 
-        #price_comparison = y_val.iloc[-1].Close - y_train.iloc[-1].Close
-        if price_comparisons[i] > 0:
-            true2.append(1)
-        else:
-            true2.append(0)
+        # Select a random window and get accuracy and error
+        rand_windnr = random.randrange(len(windows_tensor))
+        rand_window = windows_tensor[rand_windnr]
+        random_windows_real_val = real_vals_tensor[rand_windnr]
+        # Make prediction on window
+        prediction = lstm.forward(to_predict[rand_windnr])
 
-        # Check if predicted is higher or lower than previous day
-        pred_comparison = prediction.item() - pred_comp[i] #y_train.iloc[-1].Close
-        if pred_comparison > 0:
-            predicted_vals2.append(1)
-        else:
-            predicted_vals2.append(0)
+        # Get loss from window
+        val_loss = loss_fn(prediction, random_windows_real_val)
+        epoch_losses.append(val_loss.item())
+        # Round up or down prediction
+        prediction = round(prediction.item())  # Round the prediction up or down to 1 or 0
+
         # If both incresed or decreased, true positive. else wrong pred
-        if (price_comparisons[i] > 0) and (pred_comparison > 0):
+        if (price_comparisons[rand_windnr] == 1) and (prediction == 1):
             TP += 1
-        elif (price_comparisons[i] <= 0) and (pred_comparison <= 0):
-            TP += 1
-        else:
+            correct_pred += 1
+        elif (price_comparisons[rand_windnr] == 0) and (prediction == 0):
+            correct_pred += 1
+            TN += 1
+        elif (price_comparisons[rand_windnr] == 1) and (prediction == 0):
+            FN += 1
+        elif (price_comparisons[rand_windnr] == 0) and (prediction == 1):
             FP += 1
+        else:
+            wrong_pred += 1
 
-    # Calculate accuracy for the current window
-    if attempts == 0:
-        print(f'Divide by zero on attempts')
-        print(f'')
-        accuracy = 0
-    else:
-        accuracy = TP / attempts
-    # accuracies.append(accuracy)
+    accuracy = correct_pred / nr_epochs
+    plot_loss(epoch_losses)
+
+    # Fix for division by zero faults
+    print("Accuracy:", (TP + TN) / (TP + TN + FP + FN))
+    print("Recall", TP / (TP + FN))
+    print("Precision", TP / (TP + FP))
+    print("F1", (2 * TP) / (2 * TP + FP + FN))
 
     # Need to fix
     # Plot predicted vs real
@@ -256,8 +269,8 @@ if __name__=='__main__':
     min_stock_size = 200    # If stock has fewer dates than this, dont use it.
     # Hyperparameters
     hyperparams = []
-    nr_epochs = 10          # 1000 epochs
-    learning_rate = 0.01    # 0.001 lr
+    nr_epochs = 100          # 1000 epochs
+    learning_rate = 0.001    # 0.001 lr
     hidden_size = 2         # number of features in hidden state
     num_layers = 1          # number of stacked lstm layers
     num_classes = 1         # number of output classes. length of the target. in this case 1 becuase we predict 1 day ahead.
@@ -275,7 +288,7 @@ if __name__=='__main__':
             continue
         print('-----------------------------------------------')
         print(f'Prediction on stock: {x}')
-        print('starting training epoch')
+        print('strting sliding window')
         stock_start_time = time.time()
 
         accuracy = walk_forward(y, window_size, hyperparams)
