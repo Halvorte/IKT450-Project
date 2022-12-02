@@ -1,5 +1,5 @@
 import random
-
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -61,30 +61,37 @@ class LSTM(nn.Module):
 
         self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size,
                             num_layers=num_layers, batch_first=True)  # lstm
-        self.fc_1 = nn.Linear(hidden_size, 128)  # fully connected 1
-        self.fc = nn.Linear(128, num_classes)  # fully connected last layer
+        self.fc_1 = nn.Linear(hidden_size, 7)  # fully connected 1
+        #self.fc_2 = nn.Linear(7,128)
+        self.fc = nn.Linear(7, num_classes)  # fully connected last layer
         self.sigmoid = nn.Sigmoid()
         self.relu = nn.ReLU()
 
     def forward(self, x):
-        h_0 = Variable(torch.zeros(self.num_layers, x.size(0), self.hidden_size))  # hidden state
-        c_0 = Variable(torch.zeros(self.num_layers, x.size(0), self.hidden_size))  # internal state
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        h_0 = Variable(torch.zeros(self.num_layers, x.size(0), self.hidden_size, device=x.device))  # hidden state
+        c_0 = Variable(torch.zeros(self.num_layers, x.size(0), self.hidden_size, device=x.device))  # internal state
+
+        #h_0 = h_0.to(device=device)
+        #c_0 = c_0.to(device=device)
         # Propagate input through LSTM
         output, (hn, cn) = self.lstm(x, (h_0, c_0))  # lstm with input, hidden, and internal state
         hn = hn.view(-1, self.hidden_size)  # reshaping the data for Dense layer next
         out = self.relu(hn)
         out = self.fc_1(out)  # first Dense
         out = self.relu(out)  # relu
-        out = self.fc(out)  # Final Output
-        out = self.sigmoid(out)
+        #out = self.fc_2(out)
+        #out = self.relu(out)
+        out = self.fc(out)  # Final Output layer
+        out = self.sigmoid(out)     # Sigmoid to get prediction between 0 and 1
         return out
 
 
 # Function to plot loss
-def plot_loss(losses):
+def plot_loss(losses, stock_name):
     x = [x for x in range(len(losses))]
     plt.plot(x, losses, label='losses')
-    plt.title('Losses over epochs')
+    plt.title(f'Losses over epochs for {stock_name}')
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
     plt.legend()
@@ -129,6 +136,7 @@ def plot_real_pred(dataframe, predicted_vals, window_size, predicted_vals2, true
 # test function for walk forward validation
 def walk_forward(dataframe, window_size, hyperparams):
     # Get data
+    stock_name = dataframe.iloc[1]['level_0']
     #x = dataframe.drop(columns=['Close', 'Date', 'level_0'])
     x = dataframe.drop(columns=['Date', 'level_0'])
     #y = dataframe[['Close']]
@@ -144,9 +152,13 @@ def walk_forward(dataframe, window_size, hyperparams):
 
     #seq_length = x_tensors_final.shape[1]   # Dont need?
     seq_length = 1
-    lstm = LSTM(num_classes, input_size, hidden_size, num_layers, seq_length)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    lstm = LSTM(num_classes, input_size, hidden_size, num_layers, seq_length).to(device=device)
+
+
 
     loss_fn = torch.nn.MSELoss()  # mean-squared error for regression
+    #loss_fn = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(lstm.parameters(), lr=learning_rate)
 
 
@@ -193,6 +205,8 @@ def walk_forward(dataframe, window_size, hyperparams):
         pred_comp.append(y_train.iloc[-1].Cmo)
 
     epoch_losses = []
+    predictions = []
+    reals = []
     correct_pred = 0
     wrong_pred = 0
     TP = 0
@@ -204,12 +218,19 @@ def walk_forward(dataframe, window_size, hyperparams):
     for epoch in tqdm(range(nr_epochs)):
         # Train on all the windows
         for i in range(len(windows_tensor)):
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            to_pred = windows_tensor[i]
+            to_pred = to_pred.to(device=device)
 
-            outputs = lstm.forward(windows_tensor[i])  # forward pass
+            real_vals = real_vals_tensor[i]
+            real_vals = real_vals.to(device=device)
+
+            outputs = lstm.forward(to_pred)  # forward pass
+
             optimizer.zero_grad()  # caluclate the gradient, manually setting to 0
 
             # obtain the loss function
-            loss = loss_fn(outputs, real_vals_tensor[i])
+            loss = loss_fn(outputs, real_vals)
             loss.backward()  # calculates the loss of the loss function
 
             optimizer.step()  # improve from loss, i.e backprop
@@ -220,14 +241,20 @@ def walk_forward(dataframe, window_size, hyperparams):
         rand_windnr = random.randrange(len(windows_tensor))
         rand_window = windows_tensor[rand_windnr]
         random_windows_real_val = real_vals_tensor[rand_windnr]
+        random_windows_real_val = random_windows_real_val.to(device=device)
         # Make prediction on window
-        prediction = lstm.forward(to_predict[rand_windnr])
+        rand_to_predict = to_predict[rand_windnr]
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        rand_to_predict = rand_to_predict.to(device=device)
+        prediction = lstm.forward(rand_to_predict)
 
         # Get loss from window
         val_loss = loss_fn(prediction, random_windows_real_val)
         epoch_losses.append(val_loss.item())
         # Round up or down prediction
         prediction = round(prediction.item())  # Round the prediction up or down to 1 or 0
+        predictions.append(prediction)
+        reals.append(price_comparisons[rand_windnr])
 
         # If both incresed or decreased, true positive. else wrong pred
         if (price_comparisons[rand_windnr] == 1) and (prediction == 1):
@@ -244,13 +271,28 @@ def walk_forward(dataframe, window_size, hyperparams):
             wrong_pred += 1
 
     accuracy = correct_pred / nr_epochs
-    plot_loss(epoch_losses)
+    plot_loss(epoch_losses, stock_name)
+
+    cm = confusion_matrix(reals, predictions)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+    disp.plot()
+    plt.title(f'Stock: {stock_name}')
+    plt.show()
 
     # Fix for division by zero faults
     print("Accuracy:", (TP + TN) / (TP + TN + FP + FN))
-    print("Recall", TP / (TP + FN))
-    print("Precision", TP / (TP + FP))
-    print("F1", (2 * TP) / (2 * TP + FP + FN))
+    if (TP + FN) == 0:
+        print('Recall division by zero fault')
+    else:
+        print("Recall", TP / (TP + FN))
+    if (TP + FP) == 0:
+        print('Precision division by zero fault')
+    else:
+        print("Precision", TP / (TP + FP))
+    if (2 * TP + FP + FN) == 0:
+        print('F1 division by zero fault')
+    else:
+        print("F1", (2 * TP) / (2 * TP + FP + FN))
 
     # Need to fix
     # Plot predicted vs real
@@ -260,6 +302,10 @@ def walk_forward(dataframe, window_size, hyperparams):
 
 
 if __name__=='__main__':
+    # Check if CUDA gpu is available
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(device)
+
     # Get and clean the data
     df, stocks_df, all_stocks = data()
 
@@ -271,7 +317,7 @@ if __name__=='__main__':
     hyperparams = []
     nr_epochs = 100          # 1000 epochs
     learning_rate = 0.001    # 0.001 lr
-    hidden_size = 2         # number of features in hidden state
+    hidden_size = 1         # number of features in hidden state
     num_layers = 1          # number of stacked lstm layers
     num_classes = 1         # number of output classes. length of the target. in this case 1 becuase we predict 1 day ahead.
     hyperparams.extend([nr_epochs, learning_rate, hidden_size, num_layers, num_classes])
