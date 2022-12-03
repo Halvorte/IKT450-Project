@@ -12,7 +12,7 @@ import time
 from tqdm import tqdm  # For nice progress bar!
 
 
-# Funciton to read and claen the data
+# Function to read and clean the data
 def data():
     df = pd.read_csv('Complete_pp_df.csv')
 
@@ -66,19 +66,19 @@ class LSTM(nn.Module):
         self.fc = nn.Linear(7, num_classes)  # fully connected last layer
         self.sigmoid = nn.Sigmoid()
         self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.25)
 
     def forward(self, x):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         h_0 = Variable(torch.zeros(self.num_layers, x.size(0), self.hidden_size, device=x.device))  # hidden state
         c_0 = Variable(torch.zeros(self.num_layers, x.size(0), self.hidden_size, device=x.device))  # internal state
 
-        #h_0 = h_0.to(device=device)
-        #c_0 = c_0.to(device=device)
         # Propagate input through LSTM
         output, (hn, cn) = self.lstm(x, (h_0, c_0))  # lstm with input, hidden, and internal state
         hn = hn.view(-1, self.hidden_size)  # reshaping the data for Dense layer next
         out = self.relu(hn)
         out = self.fc_1(out)  # first Dense
+        out = self.dropout(out)
         out = self.relu(out)  # relu
         #out = self.fc_2(out)
         #out = self.relu(out)
@@ -137,9 +137,8 @@ def plot_real_pred(dataframe, predicted_vals, window_size, predicted_vals2, true
 def walk_forward(dataframe, window_size, hyperparams):
     # Get data
     stock_name = dataframe.iloc[1]['level_0']
-    #x = dataframe.drop(columns=['Close', 'Date', 'level_0'])
+    #x = dataframe.drop(columns=['Date', 'level_0', 'compound score'])
     x = dataframe.drop(columns=['Date', 'level_0'])
-    #y = dataframe[['Close']]
     y = dataframe[['Cmo']]
 
     # input size is the number of features. nr of columns in x data
@@ -157,9 +156,11 @@ def walk_forward(dataframe, window_size, hyperparams):
 
 
 
-    loss_fn = torch.nn.MSELoss()  # mean-squared error for regression
-    #loss_fn = torch.nn.CrossEntropyLoss()
+    #loss_fn = torch.nn.MSELoss()               # mean-squared error for regression
+    #loss_fn = torch.nn.CrossEntropyLoss()      # Cross entropy loss. better for binary classification
+    loss_fn = torch.nn.BCELoss()                # Binary cross entropy loss
     optimizer = torch.optim.Adam(lstm.parameters(), lr=learning_rate)
+    #optimizer = torch.optim.SGD(lstm.parameters(), lr=learning_rate)    # Lower accuracy than adam
 
 
 
@@ -173,12 +174,14 @@ def walk_forward(dataframe, window_size, hyperparams):
     to_predict = []
     price_comparisons = []
     pred_comp = []
+    real_to_pred = []
     for i in range(window_size, len(dataframe)):
         x_train = x.iloc[i - window_size:i]
         y_train = y.iloc[i - window_size:i]
         x_val = x.iloc[i:i + 1]
         y_val = y.iloc[i:i + 1]
         x_to_pred = x.iloc[i - 1:i]
+        real_from_pred = y.iloc[i - 1:i]
 
         # make data to tensors
         x_train_tensor = Variable(torch.tensor(x_train.values).float())
@@ -186,6 +189,7 @@ def walk_forward(dataframe, window_size, hyperparams):
         x_val_tensor = Variable(torch.tensor(x_val.values).float())
         y_val_tensor = Variable(torch.tensor(y_val.values).float())
         x_to_pred_tensor = Variable(torch.tensor(x_to_pred.values).float())
+        real_from_pred_tensor = Variable(torch.tensor(real_from_pred.values).float())
 
         x_train_tensors_final = torch.reshape(x_train_tensor, (x_train_tensor.shape[0], 1, x_train_tensor.shape[1]))
         x_val_tensors_final = torch.reshape(x_val_tensor, (x_val_tensor.shape[0], 1, x_val_tensor.shape[1]))
@@ -196,6 +200,7 @@ def walk_forward(dataframe, window_size, hyperparams):
         x_val_tensors.append(x_val_tensors_final)
         y_val_tensors.append(y_val_tensor)
         to_predict.append(x_to_pred_tensor_final)
+        real_to_pred.append(real_from_pred_tensor)
         y_trains.append(y_train)
         y_vals.append(y_val)
         # make a price comparison for each window
@@ -238,7 +243,8 @@ def walk_forward(dataframe, window_size, hyperparams):
             #    print("Epoch: %d, loss: %1.5f" % (epoch, loss.item()))
 
         # Select a random window and get accuracy and error
-        rand_windnr = random.randrange(len(windows_tensor))
+        #rand_windnr = random.randrange(len(windows_tensor))
+        rand_windnr = 12
         rand_window = windows_tensor[rand_windnr]
         random_windows_real_val = real_vals_tensor[rand_windnr]
         random_windows_real_val = random_windows_real_val.to(device=device)
@@ -249,7 +255,9 @@ def walk_forward(dataframe, window_size, hyperparams):
         prediction = lstm.forward(rand_to_predict)
 
         # Get loss from window
-        val_loss = loss_fn(prediction, random_windows_real_val)
+        rand_real = real_to_pred[rand_windnr]
+        rand_real = rand_real.to(device=device)
+        val_loss = loss_fn(prediction, rand_real)
         epoch_losses.append(val_loss.item())
         # Round up or down prediction
         prediction = round(prediction.item())  # Round the prediction up or down to 1 or 0
@@ -315,7 +323,7 @@ if __name__=='__main__':
     min_stock_size = 200    # If stock has fewer dates than this, dont use it.
     # Hyperparameters
     hyperparams = []
-    nr_epochs = 100          # 1000 epochs
+    nr_epochs = 30          # 1000 epochs
     learning_rate = 0.001    # 0.001 lr
     hidden_size = 1         # number of features in hidden state
     num_layers = 1          # number of stacked lstm layers
@@ -342,7 +350,7 @@ if __name__=='__main__':
         #accuracy = sliding_window(y, window_size, hyperparams)
         accuracies.append(accuracy)
         stock_stop_time = time.time()
-        print(f'Accuracy: {accuracy}')
+        #print(f'Accuracy: {accuracy}')
         print(f'took: {stock_stop_time - stock_start_time} seconds')
 
     stop_time = time.time()
