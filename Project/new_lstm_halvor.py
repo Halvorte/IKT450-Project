@@ -1,5 +1,5 @@
 import random
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -7,9 +7,13 @@ import pandas as pd
 from IPython.display import display
 import torch
 import torch.nn as nn
+from sklearn.model_selection import train_test_split
 from torch.autograd import Variable
 import time
+
+from torch.utils.data import DataLoader
 from tqdm import tqdm  # For nice progress bar!
+import torch.utils.data
 
 
 # Function to read and clean the data
@@ -39,8 +43,6 @@ def data():
     # Split up to the different stocks
     #all_stocks = df['Stock'].unique().tolist()
     all_stocks = df['level_0'].unique().tolist()
-    print(all_stocks)
-
     # All stocks stored in dictionary
     stocks_df = {}
     for i in all_stocks:
@@ -94,6 +96,17 @@ def plot_loss(losses, stock_name):
     plt.title(f'Losses over epochs for {stock_name}')
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
+    plt.legend()
+    plt.show()
+
+    return False
+
+def plot_acc(losses, stock_name):
+    x = [x for x in range(len(losses))]
+    plt.plot(x, losses, label='Accuracy')
+    plt.title(f'Accuracy over epochs for {stock_name}')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
     plt.legend()
     plt.show()
 
@@ -309,6 +322,136 @@ def walk_forward(dataframe, window_size, hyperparams):
     return accuracy
 
 
+def get_windows(df, stock):
+    tempDf = dict( (k, v) for k, v in df.items() if str(k) == str(stock) )
+    newDf = pd.DataFrame()
+    yDf = pd.DataFrame()
+    xList = []
+    yList = []
+    for key, value in tempDf.items():
+        a = value.drop(columns=['Date', 'Cmo', 'level_0'])
+        c = value[['Cmo']]
+        for i in range(len(value)):
+            X = a.iloc[i - window_size:i]
+            Y = c.iloc[i - window_size:i]
+            X = X.values.tolist()
+            Y = Y.values.tolist()
+            if X and Y:
+                xList.append(X)
+                yList.append(Y)
+            else:
+                pass
+
+    xDf = pd.Series(xList)
+    yDf = pd.Series(yList)
+    return xDf, yDf
+
+
+def train_model(data, model, loss_function, optimizer):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    num_batches = len(data)
+    total_loss = 0
+    for X, y in data:
+        to_pred = X
+        to_pred = to_pred.to(device=device)
+
+        real_vals = y
+        real_vals = real_vals.to(device=device)
+
+        outputs = model.forward(to_pred)  # forward pass
+
+        optimizer.zero_grad()  # caluclate the gradient, manually setting to 0
+
+        # obtain the loss function
+        # Realnum, get the 5th days number
+        realNum = real_vals.cpu()
+        realNum = realNum.numpy()
+        realNum = realNum.take([-1])
+        realNum = torch.from_numpy(realNum)
+        realNum = realNum.unsqueeze(1)
+        predNum = outputs.cpu().detach().numpy()
+        predNum = torch.tensor(predNum)
+
+        loss = loss_function(predNum, realNum)
+        loss.requires_grad = True
+        loss.backward()  # calculates the loss of the loss function
+
+        optimizer.step()  # improve from loss, i.e backprop
+
+        total_loss += loss.item()
+
+        # if epoch % 1000 == 0:
+        #    print("Epoch: %d, loss: %1.5f" % (epoch, loss.item()))
+
+    avg_loss = total_loss / num_batches
+    print(f"Train loss: {avg_loss}")
+
+
+def test_model(data, model, loss_function):
+    predictions = []
+    real = []
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    num_batches = len(data)
+    total_loss = 0
+
+    with torch.no_grad():
+        for X, y in data:
+            X = X.unsqueeze(1)
+            to_pred = X
+            to_pred = to_pred.to(device=device)
+
+            real_vals = y
+            real_vals = real_vals.to(device=device)
+
+            output = model.forward(to_pred)
+
+            total_loss += loss_function(output, real_vals)
+
+            # Log the values
+            prediction = round(output.item())
+            predictions.append(prediction)
+            real.append(real_vals.item())
+
+    avg_loss = total_loss / num_batches
+    print(f"Test loss: {avg_loss}")
+
+    TP = 0
+    TN = 0
+    FP = 0
+    FN = 0
+    correct_pred = 0
+    wrong_pred = 0
+    for i in range(len(predictions)):
+        if (predictions[i] == 1) and (real[i] == 1):
+            TP += 1
+            correct_pred += 1
+        elif (predictions[i] == 0) and (real[i] == 0):
+            correct_pred += 1
+            TN += 1
+        elif (predictions[i] == 1) and (real[i] == 0):
+            FP += 1
+        elif (predictions[i] == 0) and (real[i] == 1):
+            FN += 1
+        else:
+            wrong_pred += 1
+
+
+    # Fix for division by zero faults
+    print("Accuracy:", (TP + TN) / (TP + TN + FP + FN))
+    if (TP + FN) == 0:
+        print('Recall division by zero fault')
+    else:
+        print("Recall", TP / (TP + FN))
+    if (TP + FP) == 0:
+        print('Precision division by zero fault')
+    else:
+        print("Precision", TP / (TP + FP))
+    if (2 * TP + FP + FN) == 0:
+        print('F1 division by zero fault')
+    else:
+        print("F1", (2 * TP) / (2 * TP + FP + FN))
+
+
 if __name__=='__main__':
     # Check if CUDA gpu is available
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -320,10 +463,13 @@ if __name__=='__main__':
 
     window_size = 5         # Change size of sliding window
 
+    # xDf, yDf = get_windows(stocks_df, window_size)
+    stock_names = df['level_0'].unique().tolist()
+
     min_stock_size = 200    # If stock has fewer dates than this, dont use it.
     # Hyperparameters
     hyperparams = []
-    nr_epochs = 30          # 1000 epochs
+    nr_epochs = 5         # 1000 epochs
     learning_rate = 0.001    # 0.001 lr
     hidden_size = 1         # number of features in hidden state
     num_layers = 1          # number of stacked lstm layers
@@ -335,26 +481,90 @@ if __name__=='__main__':
     # Starting time for training and getting accuracies
     start_time = time.time()
 
-    # Make prediciton on one stock at the time
-    for x,y in stocks_df.items():
-        #display(y.head())
-        if len(y) < min_stock_size:
-            continue
-        print('-----------------------------------------------')
-        print(f'Prediction on stock: {x}')
-        print('strting sliding window')
-        stock_start_time = time.time()
+    # Make prediciton on one stock at the
+    for stock in stock_names:
+        print(stock)
+        xDf, yDf = get_windows(stocks_df, stock)
+        if(len(xDf) < 50):
+            pass
+        else:
+            X_train, X_test, y_train, y_test = train_test_split(xDf, yDf, test_size=0.33, random_state=42)
+        #
+        # print(X_train)
+        # print(X_test)
+        # print(y_train)
+        # print(y_test)
 
-        accuracy = walk_forward(y, window_size, hyperparams)
+            new_xTest = []
+            for sub_list in X_test:
+                new_xTest.append(sub_list[-1])
 
-        #accuracy = sliding_window(y, window_size, hyperparams)
-        accuracies.append(accuracy)
-        stock_stop_time = time.time()
-        #print(f'Accuracy: {accuracy}')
-        print(f'took: {stock_stop_time - stock_start_time} seconds')
+            new_yTest = []
+            for sub_list in y_test:
+                new_yTest.append(sub_list[-1])
 
-    stop_time = time.time()
-    print(f'Used a total time of {stop_time - start_time} seconds')
-    print(all_stocks)
-    print(accuracies)
-    print(f'Average accuracy: {(sum(accuracies) / len(accuracies))}')
+            new_xTest = torch.Tensor(new_xTest)
+            new_yTest = torch.Tensor(new_yTest)
+
+            X_train = torch.Tensor(list(X_train.values))
+            y_train = torch.Tensor(list(y_train.values))
+            # X_test = torch.Tensor(list(new_xTest.values))
+            # y_test = torch.Tensor(list(new_yTest.values))
+
+            trainDataset = torch.utils.data.TensorDataset(X_train, y_train)
+            testDataset = torch.utils.data.TensorDataset(new_xTest, new_yTest)
+            train_loader = DataLoader(trainDataset, batch_size=1, shuffle=True)
+            test_loader = DataLoader(testDataset, batch_size=1, shuffle=True)
+            X, y = next(iter(train_loader))
+            #
+            # print("Features shape:", X.shape)
+            # print("Target shape:", y.shape)
+
+            # input size is the number of features. nr of columns in x data
+            input_size = X_train.shape[2]  # Decided by the number of columns in training data
+            nr_epochs = hyperparams[0]
+            learning_rate = hyperparams[1]
+            hidden_size = hyperparams[2]
+            num_layers = hyperparams[3]
+            num_classes = hyperparams[4]
+
+            # seq_length = x_tensors_final.shape[1]   # Dont need?
+            seq_length = 1
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            lstm = LSTM(num_classes, input_size, hidden_size, num_layers, seq_length).to(device=device)
+
+
+            # loss_fn = torch.nn.MSELoss()               # mean-squared error for regression
+            # loss_fn = torch.nn.CrossEntropyLoss()      # Cross entropy loss. better for binary classification
+            loss_fn = torch.nn.BCELoss()  # Binary cross entropy loss
+            optimizer = torch.optim.Adam(lstm.parameters(), lr=learning_rate)
+            # optimizer = torch.optim.SGD(lstm.parameters(), lr=learning_rate)    # Lower accuracy than adam
+
+            for epoch in range(nr_epochs):
+                print(f"Epoch {epoch}\n---------")
+                train_model(train_loader, lstm, loss_fn, optimizer=optimizer)
+                test_model(test_loader, lstm, loss_fn)
+                print()
+
+    # for x,y in stocks_df.items():
+    #     #display(y.head())
+    #     if len(y) < min_stock_size:
+    #         continue
+    #     print('-----------------------------------------------')
+    #     print(f'Prediction on stock: {x}')
+    #     print('strting sliding window')
+    #     stock_start_time = time.time()
+    #
+    #     accuracy = walk_forward(y, window_size, hyperparams)
+    #
+    #     #accuracy = sliding_window(y, window_size, hyperparams)
+    #     accuracies.append(accuracy)
+    #     stock_stop_time = time.time()
+    #     #print(f'Accuracy: {accuracy}')
+    #     print(f'took: {stock_stop_time - stock_start_time} seconds')
+    #
+    # stop_time = time.time()
+    # print(f'Used a total time of {stop_time - start_time} seconds')
+    # print(all_stocks)
+    # print(accuracies)
+    # print(f'Average accuracy: {(sum(accuracies) / len(accuracies))}')
