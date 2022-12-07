@@ -40,7 +40,7 @@ def data():
     # Split up to the different stocks
     #all_stocks = df['Stock'].unique().tolist()
     all_stocks = df['level_0'].unique().tolist()
-    #print(all_stocks)
+    print(all_stocks)
 
     # All stocks stored in dictionary
     stocks_df = {}
@@ -53,8 +53,7 @@ def data():
 
 # function to split data into train val and windows
 def windows(dataframe, window_size):
-    #dataframe = dataframe.drop(columns=['level_0', 'Date', 'compound score'])
-    dataframe = dataframe.drop(columns=['level_0', 'Date'])
+    dataframe = dataframe.drop(columns=['level_0', 'Date', 'compound score'])
     raw = dataframe.to_numpy()
     x = []
     y = []
@@ -69,6 +68,10 @@ def windows(dataframe, window_size):
     x1 = np.array(x)
     y1 = np.array(y)
 
+    print(x1.shape)
+    print(y1.shape)
+
+    #data = np.array(data)
     train_size = int(np.round(0.8*x1.shape[0]))
     test_size = x1.shape[0] - train_size
 
@@ -100,8 +103,8 @@ class LSTM(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim, device=x.device).requires_grad_()
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim, device=x.device).requires_grad_()
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).requires_grad_()
+        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).requires_grad_()
         out, (hn, cn) = self.lstm(x, (h0.detach(), c0.detach()))
         out = self.relu(out)
         out = self.fc1(out)
@@ -111,12 +114,26 @@ class LSTM(nn.Module):
         return out
 
 
+# Function to plot loss
+def plot_loss(losses, stock_name):
+    x = [x for x in range(len(losses))]
+    plt.plot(x, losses, label='losses')
+    plt.title(f'Losses over epochs for {stock_name}')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.show()
+
+    return False
+
+
 # TP TN FP FN function
 def comparison(real, predicted):
     TP = 0
     TN = 0
     FP = 0
     FN = 0
+    wrong_pred = 0
 
     for i in range(len(real)):
 
@@ -130,20 +147,22 @@ def comparison(real, predicted):
             FN += 1
         elif (real[i] == 0) and (predicted[i] == 1):
             FP += 1
+        else:
+            wrong_pred += 1
 
-    return TP, TN, FP, FN
+    return TP, TN, FP, FN, wrong_pred
 
 
 # Funciton to calculate train accuracy for an epoch
 def train_acc(y_train_pred, y_train, t, num_epochs):
-    #y_train_pred = y_train_pred.tolist()
+    y_train_pred = y_train_pred.tolist()
     y_train_pred = [round(num) for num in y_train_pred]
-    #y_train = y_train.tolist()
-    TP, TN, FP, FN = comparison(y_train, y_train_pred)
+    y_train = y_train.tolist()
+    TP, TN, FP, FN, wrong_pred = comparison(y_train, y_train_pred)
 
     if t == num_epochs - 1:
         # Fix for division by zero faults
-        print('\nTrain results:')
+        print('Train results:')
         print("Accuracy:", (TP + TN) / (TP + TN + FP + FN))
         if (TP + FN) == 0:
             print('Recall division by zero fault')
@@ -163,15 +182,24 @@ def train_acc(y_train_pred, y_train, t, num_epochs):
     return accuracy
 
 
-def test_acc(y_test_pred, y_test, t, num_epochs, stock_name):
-    # y_train_pred = y_train_pred.tolist()
+# Function to get training accuracy and loss for one epoch
+def val_acc_loss(x_test, y_test, model, criterion, t, num_epochs, x):
+
+    y_test_pred = model(x_test)
+    y_test_pred = y_test_pred.view(-1, )
+
+    loss = criterion(y_train_pred, y_train)
+    val_loss = loss.item()
+
+    y_test_pred = y_test_pred.tolist()
     y_test_pred = [round(num) for num in y_test_pred]
-    # y_train = y_train.tolist()
-    TP, TN, FP, FN = comparison(y_test, y_test_pred)
+    y_test = y_test.tolist()
+
+    TP, TN, FP, FN, wrong_pred = comparison(y_test, y_test_pred)
 
     if t == num_epochs - 1:
         # Fix for division by zero faults
-        print('\nTest results:')
+        print('Test results:')
         print("Accuracy:", (TP + TN) / (TP + TN + FP + FN))
         if (TP + FN) == 0:
             print('Recall division by zero fault')
@@ -190,36 +218,12 @@ def test_acc(y_test_pred, y_test, t, num_epochs, stock_name):
         cm = confusion_matrix(y_test, y_test_pred)
         disp = ConfusionMatrixDisplay(confusion_matrix=cm)
         disp.plot()
-        plt.title(f'Validation on Stock: {stock_name}')
+        plt.title(f'Validation on Stock: {x}')
         plt.show()
 
-    accuracy = (TP + TN) / (TP + TN + FP + FN)
+    val_acc = (TP + TN) / (TP + TN + FP + FN)
 
-    return accuracy
-
-
-# Function to plot loss and accuracy
-def plot_results(train_avg_losses, test_losses, train_accuracies, test_accuracies, num_epochs, stock_name):
-    x = [x for x in range(num_epochs)]
-    # z = [z for z in range(len(test_losses))]
-    plt.title(f'Train and Test Loss on stock {stock_name}')
-    plt.plot(x, train_avg_losses, label='train losses')
-    plt.plot(x, test_losses, label='test loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.show()
-
-    plt.title(f'Train and Test Accuracy on stock {stock_name}')
-    #x = [x for x in range(len(train_accuracies))]
-    plt.plot(x, train_accuracies, label='Train accuracy')
-    #x = [x for x in range(len(test_accuracies))]
-    plt.plot(x, test_accuracies, label='Test accuracy')
-    plt.xlabel('Epochs')
-    plt.ylabel('Accuracy')
-    plt.legend()
-    plt.show()
-    return False
+    return val_acc, val_loss
 
 
 # Main function
@@ -234,29 +238,29 @@ if __name__=='__main__':
 
     window_size = 5         # Change size of sliding window
 
-    min_stock_size = 350    # If stock has fewer days of data than this, dont use it.
+    min_stock_size = 200    # If stock has fewer days of data than this, dont use it.
 
-    input_dim = 8
+    input_dim = 7
     hidden_dim = 32
     num_layers = 2
     output_dim = 1
-    num_epochs = 20
-    learning_rate = 0.001
-    batch_size = 128
-    num_workers = 6
+    num_epochs = 100
 
     # Starting time for training and getting accuracies
     start_time = time.time()
 
-    average_test_acc = []
+    average_val_acc = []
 
     # Make prediciton on one stock at the time
     for x,y in stocks_df.items():
+        #display(y.head())
+        #if x == 'AAPL':
         stock_name = x
         if len(y) < min_stock_size:
             continue
-        #print('-----------------------------------------------')
-        print(f'\nPrediction on stock: {x}')
+        print('-----------------------------------------------')
+        print(f'Prediction on stock: {x}')
+        #print('Starting sliding window:')
         stock_start_time = time.time()
 
         # Get train and test
@@ -268,103 +272,60 @@ if __name__=='__main__':
         x_test = torch.from_numpy(x_test).type(torch.Tensor)
         y_test = torch.from_numpy(y_test).type(torch.Tensor)
 
-        trainDataset = torch.utils.data.TensorDataset(x_train, y_train)
-        trainDataloader = torch.utils.data.DataLoader(trainDataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-
-        testDataset = torch.utils.data.TensorDataset(x_test, y_test)
-        testDataloader = torch.utils.data.DataLoader(testDataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-
-        model = LSTM(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, num_layers=num_layers).to(device=device)
+        model = LSTM(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, num_layers=num_layers)
         criterion = torch.nn.MSELoss(reduction='mean')
         #criterion = torch.nn.BCELoss(reduction='mean')  # Binary cross entropy loss
-        optimiser = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        optimiser = torch.optim.Adam(model.parameters(), lr=0.001)
 
         hist = np.zeros(num_epochs)
         start_time = time.time()
         lstm = []
         train_accuracies = []
-        train_avg_acc = []
-        train_avg_losses = []
         test_accuracies = []
         test_losses = []
-        for t in tqdm(range(num_epochs)):
-            train_running_loss = 0
-            test_running_loss = 0
-            train_tot_loss = 0
-            test_tot_loss = 0
-            batch_pred_training_accuracy = []
-            batch_label_training_accuracy = []
-            batch_pred_test_accuracy = []
-            batch_label_test_accuracy = []
-
-            #print(f'Epoch {t}')
-            model.train(True)
-            for i, data in enumerate(trainDataloader):
-                #print('yo, train batch')
-                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                inputs, labels = data
-                optimiser.zero_grad()   # Zero the gradients for every batch
-                inputs = inputs.to(device=device)
-                labels = labels.to(device=device)
-
-                y_train_pred = model(inputs)
-                y_train_pred = y_train_pred.view(-1,)
-                loss = criterion(y_train_pred, labels)
-
-                # get batch loss
-                train_running_loss += loss.item()
-                train_tot_loss += loss.item()
-
-                # predictions and real
-                batch_pred_training_accuracy.extend(y_train_pred.tolist())
-                batch_label_training_accuracy.extend(labels.tolist())
-
-                loss.backward()
-                optimiser.step()
-
-            model.train(False)
-
-            # Get train loss
-            train_loss = train_running_loss / len(trainDataloader)
-            train_avg_losses.append(train_loss)
+        model.train()
+        for t in range(num_epochs):
+            y_train_pred = model(x_train)
+            y_train_pred = y_train_pred.view(-1,)
+            loss = criterion(y_train_pred, y_train)
+            #print('--------------------------------------------------------')
+            #print("Epoch ", t, "MSE: ", loss.item())
+            hist[t] = loss.item()
 
             # Get train accuracy
-            train_epoch_accuracy = train_acc(batch_pred_training_accuracy, batch_label_training_accuracy, t, num_epochs)
+            train_epoch_accuracy = train_acc(y_train_pred, y_train, t, num_epochs)
             train_accuracies.append(train_epoch_accuracy)
 
-            model.eval()
-            for j, data in enumerate(testDataloader):
-                inputs, labels = data
-                inputs = inputs.to(device=device)
-                labels = labels.to(device=device)
+            # Get val loss and accuracy
+            val_acc, val_loss = val_acc_loss(x_test, y_test, model, criterion, t, num_epochs, stock_name)
+            test_accuracies.append(val_acc)
+            test_losses.append(val_loss)
 
-                y_test_pred = model(inputs)
-                y_test_pred = y_test_pred.view(-1, )
-                loss = criterion(y_test_pred, labels)
+            loss.backward()
+            optimiser.step()
+            optimiser.zero_grad()
 
-                # get batch loss
-                test_running_loss += loss.item()
-                test_tot_loss += loss.item()
-
-                # get batch accuracy
-                batch_pred_test_accuracy.extend(y_test_pred.tolist())
-                batch_label_test_accuracy.extend(labels.tolist())
-
-            # Get test loss
-            test_loss = test_running_loss / len(testDataloader)
-            test_losses.append(test_loss)
-
-            # Get test accuracy and print confusion matrix on last epoch
-            test_epoch_accuracy = test_acc(batch_pred_test_accuracy, batch_label_test_accuracy, t, num_epochs, stock_name)
-            test_accuracies.append(test_epoch_accuracy)
-
-        average_test_acc.append(test_accuracies[-1])    # Add the test accuracy from last epoch to
+        average_val_acc.append(val_acc)
 
         training_time = time.time() - start_time
-        print(f"Training time: {training_time}")
+        print("Training time: {}".format(training_time))
 
-        # plot loss and accuracy for train and test
-        plot_results(train_avg_losses, test_losses, train_accuracies, test_accuracies, num_epochs, stock_name)
+        plt.title(f'Training on stock {stock_name}')
+        x = [x for x in range(len(hist))]
+        plt.plot(x, hist, label='Loss')
 
+        x = [x for x in range(len(train_accuracies))]
+        plt.plot(x, train_accuracies, label='Accuracy')
+        plt.legend()
+        plt.show()
 
-    print(f'Average test accuracy across all stocks: {sum(average_test_acc) / len(average_test_acc)}')
+        plt.title(f'Validation on stock {stock_name}')
+        x = [x for x in range(len(test_losses))]
+        plt.plot(x, test_losses, label='Loss')
+
+        x = [x for x in range(len(test_accuracies))]
+        plt.plot(x, test_accuracies, label='Accuracy')
+        plt.legend()
+        plt.show()
+
+    print(f'Average val accuracy: {sum(average_val_acc) / len(average_val_acc)}')
