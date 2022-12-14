@@ -11,6 +11,7 @@ from torch.autograd import Variable
 import time
 from tqdm import tqdm  # For nice progress bar!
 from torch.utils.data import DataLoader
+from torchvision import models
 
 
 # Function to read and clean the data
@@ -94,17 +95,22 @@ class LSTM(nn.Module):
         self.num_layers = num_layers
 
         self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
+        self.gru = nn.GRU(input_dim, hidden_dim, num_layers, batch_first=True)
         self.fc = nn.Linear(64, output_dim)
         self.fc1 = nn.Linear(hidden_dim, 64)
         self.relu = nn.ReLU()
         self.sigmoid = nn.Sigmoid()
+        self.dropout = nn.Dropout(0.25)
 
     def forward(self, x):
         h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim, device=x.device).requires_grad_()
         c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim, device=x.device).requires_grad_()
         out, (hn, cn) = self.lstm(x, (h0.detach(), c0.detach()))
+        #out, hn = self.gru(x, h0.detach())
         out = self.relu(out)
+        #out = self.dropout(out)
         out = self.fc1(out)
+        #out = self.relu(out)
         #out = self.sigmoid(out)
         out = self.fc(out[:, -1, :])
         out = self.sigmoid(out)
@@ -231,24 +237,25 @@ if __name__=='__main__':
     # Get and clean the data
     df, stocks_df, all_stocks = data()
 
-
     window_size = 5         # Change size of sliding window
 
     min_stock_size = 350    # If stock has fewer days of data than this, dont use it.
 
     input_dim = 8
-    hidden_dim = 32
+    hidden_dim = 16
     num_layers = 2
     output_dim = 1
-    num_epochs = 20
-    learning_rate = 0.001
-    batch_size = 128
+    num_epochs = 500
+    learning_rate = 0.0001
+    batch_size = 1024
     num_workers = 6
 
     # Starting time for training and getting accuracies
     start_time = time.time()
 
     average_test_acc = []
+
+    #model = LSTM(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, num_layers=num_layers).to(device=device)
 
     # Make prediciton on one stock at the time
     for x,y in stocks_df.items():
@@ -269,15 +276,18 @@ if __name__=='__main__':
         y_test = torch.from_numpy(y_test).type(torch.Tensor)
 
         trainDataset = torch.utils.data.TensorDataset(x_train, y_train)
-        trainDataloader = torch.utils.data.DataLoader(trainDataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+        trainDataloader = torch.utils.data.DataLoader(trainDataset, batch_size=batch_size, shuffle=True)
 
         testDataset = torch.utils.data.TensorDataset(x_test, y_test)
-        testDataloader = torch.utils.data.DataLoader(testDataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+        testDataloader = torch.utils.data.DataLoader(testDataset, batch_size=batch_size, shuffle=False)
 
         model = LSTM(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, num_layers=num_layers).to(device=device)
-        criterion = torch.nn.MSELoss(reduction='mean')
-        #criterion = torch.nn.BCELoss(reduction='mean')  # Binary cross entropy loss
+        #criterion = torch.nn.MSELoss(reduction='mean')
+        criterion = torch.nn.BCELoss(reduction='mean')  # Binary cross entropy loss
+        #criterion = torch.nn.BCEWithLogitsLoss()
         optimiser = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        #optimiser = torch.optim.SGD(model.parameters(), lr=learning_rate)
+        #optimiser = torch.optim.Adamax(model.parameters(), lr=learning_rate)
 
         hist = np.zeros(num_epochs)
         start_time = time.time()
